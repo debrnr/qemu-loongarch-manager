@@ -17,12 +17,12 @@ def build():
         "--onefile",           # 打包成单个文件
         "--windowed",          # Windows GUI 程序（无控制台窗口）
         "--name", "Deepin_VM_Manager",  # 输出文件名
-        "--icon", "NONE",      # 可以添加图标文件路径
+        "--icon", "icon.ico",  # 图标文件
         "--clean",             # 清理临时文件
         "--noconfirm",         # 不确认覆盖
-        # 添加数据文件（如果有的话）
-        # "--add-data", "config.json;.",
-        "..\vm_manager.py"
+        # 添加数据文件（图标）
+        "--add-data", "icon.ico;.",
+        "vm_manager.py"
     ]
 
     print("开始打包...")

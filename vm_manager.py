@@ -31,7 +31,7 @@ try:
         QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
         QLabel, QPushButton, QSpinBox, QLineEdit, QTextEdit, QGroupBox,
         QGridLayout, QMessageBox, QFileDialog, QStatusBar, QProgressBar,
-        QTabWidget, QCheckBox, QComboBox, QInputDialog
+        QTabWidget, QCheckBox, QComboBox, QInputDialog, QProgressDialog
     )
     from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
     from PyQt6.QtGui import QFont, QIcon, QColor, QPalette
@@ -45,7 +45,7 @@ if not PYQT6_AVAILABLE:
             QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
             QLabel, QPushButton, QSpinBox, QLineEdit, QTextEdit, QGroupBox,
             QGridLayout, QMessageBox, QFileDialog, QStatusBar, QProgressBar,
-            QTabWidget, QCheckBox, QComboBox, QInputDialog
+            QTabWidget, QCheckBox, QComboBox, QInputDialog, QProgressDialog
         )
         from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
         from PyQt5.QtGui import QFont, QIcon, QColor
@@ -219,7 +219,7 @@ class VMManager(QMainWindow):
         super().__init__()
         self.setWindowTitle(f"QML - QEMU Manager for LoongArch ({VERSION_STR})")
         self.setMinimumSize(600, 400)
-        self.resize(900, 700)
+        self.resize(900, 800)
         self.vm_runner = None
         self.config_file = Path("vm_config.json")
 
@@ -972,16 +972,21 @@ class VMManager(QMainWindow):
         self.log_text.append(f"源: {hdd_path}")
         self.log_text.append(f"目标: {backup_path}")
 
-        # 创建进度对话框
-        progress_dialog = QMessageBox(self)
-        progress_dialog.setWindowTitle("备份进行中")
-        progress_dialog.setText("正在备份磁盘，请稍候...\n\n这可能需要几分钟时间。")
-        progress_dialog.setStandardButtons(QMessageBox.StandardButton.Cancel)
-        progress_dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
-
         # 显示文件大小信息
         source_size = os.path.getsize(hdd_path) / (1024 * 1024)
-        progress_dialog.setInformativeText(f"源文件大小: {source_size:.2f} MB\n目标: {backup_path}")
+
+        # 创建进度对话框（使用 QProgressDialog）
+        progress_dialog = QProgressDialog(
+            f"正在备份磁盘...\n\n源文件大小: {source_size:.2f} MB\n目标: {os.path.basename(backup_path)}",
+            "取消备份",
+            0, 100, self
+        )
+        progress_dialog.setWindowTitle("备份进行中")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)  # 立即显示
+        progress_dialog.setValue(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
 
         # 创建备份线程
         self.backup_thread = BackupThread(qemu_img, hdd_path, backup_path, "full")
@@ -990,9 +995,20 @@ class VMManager(QMainWindow):
         def on_progress(msg):
             # 解析进度信息（qemu-img 会输出百分比）
             if "%" in msg:
-                progress_dialog.setText(f"正在备份磁盘...\n\n进度: {msg}")
+                try:
+                    # 提取百分比数字
+                    percent_str = msg.split("%")[0].strip()
+                    percent = int(float(percent_str))
+                    progress_dialog.setValue(percent)
+                    progress_dialog.setLabelText(
+                        f"正在备份磁盘... {percent}%\n\n"
+                        f"源文件大小: {source_size:.2f} MB\n"
+                        f"目标: {os.path.basename(backup_path)}"
+                    )
+                except:
+                    progress_dialog.setLabelText(f"正在备份磁盘...\n\n{msg}")
             else:
-                progress_dialog.setText(f"正在备份磁盘...\n\n{msg}")
+                progress_dialog.setLabelText(f"正在备份磁盘...\n\n{msg}")
 
         def on_finished(success, msg):
             progress_dialog.close()
@@ -1023,17 +1039,14 @@ class VMManager(QMainWindow):
         self.backup_thread.progress_signal.connect(on_progress)
         self.backup_thread.finished_signal.connect(on_finished)
 
+        # 连接取消按钮
+        progress_dialog.canceled.connect(self.backup_thread.stop)
+
         # 启动备份线程
         self.backup_thread.start()
 
         # 显示进度对话框
-        result = progress_dialog.exec()
-
-        # 如果用户点击取消，停止备份
-        if result == QMessageBox.StandardButton.Cancel:
-            self.backup_thread.stop()
-            self.log_text.append("⚠️ 备份已取消")
-            self.status_bar.showMessage("备份已取消")
+        progress_dialog.exec()
 
     def incremental_backup_disk(self):
         """增量备份磁盘（使用 backing_file）"""
@@ -1072,23 +1085,28 @@ class VMManager(QMainWindow):
         self.log_text.append(f"源: {hdd_path}")
         self.log_text.append(f"目标: {backup_path}")
 
-        # 创建进度对话框
-        progress_dialog = QMessageBox(self)
-        progress_dialog.setWindowTitle("增量备份进行中")
-        progress_dialog.setText("正在创建增量备份，请稍候...\n\n这个操作很快完成。")
-        progress_dialog.setStandardButtons(QMessageBox.StandardButton.Cancel)
-        progress_dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
-
         # 显示文件大小信息
         source_size = os.path.getsize(hdd_path) / (1024 * 1024)
-        progress_dialog.setInformativeText(f"源文件大小: {source_size:.2f} MB\n目标: {backup_path}")
+
+        # 创建进度对话框（使用 QProgressDialog）
+        progress_dialog = QProgressDialog(
+            f"正在创建增量备份...\n\n源文件大小: {source_size:.2f} MB\n目标: {os.path.basename(backup_path)}",
+            "取消备份",
+            0, 0, self  # 0-0 表示进度未知（忙碌状态）
+        )
+        progress_dialog.setWindowTitle("增量备份进行中")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)  # 立即显示
+        progress_dialog.setValue(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
 
         # 创建备份线程
         self.backup_thread = BackupThread(qemu_img, hdd_path, backup_path, "incremental")
 
         # 连接信号
         def on_progress(msg):
-            progress_dialog.setText(f"正在创建增量备份...\n\n{msg}")
+            progress_dialog.setLabelText(f"正在创建增量备份...\n\n{msg}")
 
         def on_finished(success, msg):
             progress_dialog.close()
@@ -1116,17 +1134,14 @@ class VMManager(QMainWindow):
         self.backup_thread.progress_signal.connect(on_progress)
         self.backup_thread.finished_signal.connect(on_finished)
 
+        # 连接取消按钮
+        progress_dialog.canceled.connect(self.backup_thread.stop)
+
         # 启动备份线程
         self.backup_thread.start()
 
         # 显示进度对话框
-        result = progress_dialog.exec()
-
-        # 如果用户点击取消，停止备份
-        if result == QMessageBox.StandardButton.Cancel:
-            self.backup_thread.stop()
-            self.log_text.append("⚠️ 增量备份已取消")
-            self.status_bar.showMessage("备份已取消")
+        progress_dialog.exec()
 
     def refresh_disk_info(self):
         """刷新磁盘信息"""
@@ -1303,6 +1318,39 @@ class VMManager(QMainWindow):
             "-device", "usb-kbd",
             "-device", "usb-tablet",
             "-hda", temp_disk_path,  # 使用临时磁盘
+            "-boot", "c",
+            "-netdev", f"user,id=net0,hostfwd=tcp::{self.config['rdp_port']}-:3389",
+            "-device", "e1000,netdev=net0",
+            "-device", "intel-hda",
+            "-device", "hda-output",
+            "-device", "virtio-serial-pci",
+            "-device", "virtserialport,chardev=spicechannel0,name=com.redhat.spice.0",
+            "-chardev", "spicevmc,id=spicechannel0,name=vdagent"
+        ]
+
+        return cmd
+
+    def build_command_for_snapshot(self, snapshot_path):
+        """构建从快照启动的 QEMU 命令（使用外部快照文件）"""
+        qemu_exe = os.path.join(self.config['qemu_dir'], "qemu-system-loongarch64.exe")
+        bios_path = os.path.join(self.config['qemu_dir'], "share", "edk2-loongarch64-code.fd")
+
+        cmd = [
+            qemu_exe,
+            "-machine", "virt",
+            "-accel", "tcg,thread=multi",
+            "-cpu", "max",
+            "-smp", str(self.config['cpu_cores']),
+            "-m", str(self.config['memory']),
+            "-rtc", "base=localtime",
+            "-bios", bios_path,
+            "-vga", "none",
+            "-device", "virtio-gpu-pci",
+            "-spice", f"port={self.config['spice_port']},addr=127.0.0.1,disable-ticketing=on",
+            "-device", "qemu-xhci",
+            "-device", "usb-kbd",
+            "-device", "usb-tablet",
+            "-hda", snapshot_path,  # 使用快照文件作为磁盘
             "-boot", "c",
             "-netdev", f"user,id=net0,hostfwd=tcp::{self.config['rdp_port']}-:3389",
             "-device", "e1000,netdev=net0",
@@ -1959,44 +2007,35 @@ class VMManager(QMainWindow):
         self.test_start_btn.setEnabled(True)
 
     def refresh_snapshot_list(self):
-        """刷新快照列表到下拉框"""
+        """刷新快照列表到下拉框（从外部快照文件目录）"""
         hdd_path = self.config['hdd_path']
+        snapshot_dir = self.config.get('snapshot_dir', '.\\disk\\snapshot')
 
         if not os.path.exists(hdd_path):
             self.snapshot_combo.clear()
             self.snapshot_combo.addItem("磁盘文件不存在")
             return
 
-        result = self.run_qemu_img(["snapshot", "-l", hdd_path])
+        self.snapshot_combo.clear()
 
-        if result and result.returncode == 0:
-            self.snapshot_combo.clear()
-            output = result.stdout
+        # 从外部快照目录获取快照文件列表
+        snapshots = []
+        if os.path.exists(snapshot_dir):
+            for file in sorted(os.listdir(snapshot_dir)):
+                if file.endswith('.qcow2'):
+                    # 去掉 .qcow2 后缀作为快照名称
+                    snapshot_name = file[:-6]
+                    snapshots.append(snapshot_name)
 
-            # 解析快照列表
-            snapshots = []
-            for line in output.split('\n'):
-                # 格式: ID        TAG               VM SIZE      DATE       VM CLOCK
-                # 或者: 1         snapshot_name     1.2G  2024-01-01 00:00:00   00:00:00.000
-                parts = line.strip().split()
-                if len(parts) >= 2 and parts[0].isdigit():
-                    tag = parts[1]
-                    snapshots.append(tag)
-
-            if snapshots:
-                self.snapshot_combo.addItems(snapshots)
-                self.log_text.append(f"✅ 已加载 {len(snapshots)} 个快照")
-            else:
-                self.snapshot_combo.addItem("暂无快照")
-                self.log_text.append("ℹ️ 当前没有快照")
+        if snapshots:
+            self.snapshot_combo.addItems(snapshots)
+            self.log_text.append(f"✅ 已加载 {len(snapshots)} 个快照")
         else:
-            self.snapshot_combo.clear()
-            self.snapshot_combo.addItem("获取失败")
-            error = result.stderr if result else "未知错误"
-            self.log_text.append(f"❌ 获取快照列表失败: {error}")
+            self.snapshot_combo.addItem("暂无快照")
+            self.log_text.append(f"ℹ️ 快照目录 {snapshot_dir} 中没有找到快照文件")
 
     def start_from_snapshot(self):
-        """从选定的快照启动虚拟机"""
+        """从选定的快照启动虚拟机（使用外部快照文件）"""
         snapshot_name = self.snapshot_combo.currentText()
 
         if not snapshot_name or snapshot_name in ["暂无快照", "获取失败", "磁盘文件不存在", "点击刷新加载快照列表..."]:
@@ -2009,14 +2048,19 @@ class VMManager(QMainWindow):
             QMessageBox.critical(self, "错误", f"找不到 QEMU:\n{qemu_exe}")
             return
 
-        if not os.path.exists(self.config['hdd_path']):
-            QMessageBox.critical(self, "错误", "虚拟磁盘不存在！")
+        # 获取快照文件路径
+        snapshot_dir = self.config.get('snapshot_dir', '.\\disk\\snapshot')
+        snapshot_path = os.path.join(snapshot_dir, f"{snapshot_name}.qcow2")
+
+        if not os.path.exists(snapshot_path):
+            QMessageBox.critical(self, "错误", f"找不到快照文件:\n{snapshot_path}")
             return
 
         # 确认启动
         reply = QMessageBox.question(
             self, "从快照启动",
             f"将从快照 '{snapshot_name}' 启动虚拟机。\n\n"
+            f"快照文件: {snapshot_path}\n\n"
             "注意：启动后如果保存更改，会影响当前磁盘状态。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
@@ -2024,26 +2068,17 @@ class VMManager(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        # 先恢复到指定快照
-        self.log_text.append(f"正在恢复到快照: {snapshot_name}...")
-        result = self.run_qemu_img(["snapshot", "-a", snapshot_name, self.config['hdd_path']])
-
-        if result and result.returncode == 0:
-            self.log_text.append(f"✅ 已恢复到快照: {snapshot_name}")
-        else:
-            error = result.stderr if result else "未知错误"
-            self.log_text.append(f"❌ 恢复快照失败: {error}")
-            QMessageBox.critical(self, "错误", f"恢复快照失败:\n{error}")
-            return
+        self.log_text.append(f"📸 从快照 '{snapshot_name}' 启动虚拟机...")
+        self.log_text.append(f"快照文件: {snapshot_path}")
 
         # 标记为从快照启动模式
         self.snapshot_start_mode = True
         self.started_from_snapshot = snapshot_name
+        self.snapshot_file_path = snapshot_path
 
-        # 启动虚拟机
-        cmd = self.build_command()
+        # 启动虚拟机（使用快照文件作为磁盘）
+        cmd = self.build_command_for_snapshot(snapshot_path)
         self.log_text.append("=" * 50)
-        self.log_text.append(f"📸 从快照 '{snapshot_name}' 启动虚拟机...")
         self.log_text.append(f"命令: {' '.join(cmd)}")
         self.log_text.append("=" * 50)
 
@@ -2091,7 +2126,10 @@ class VMManager(QMainWindow):
 
         # 清理
         self.started_from_snapshot = None
+        self.snapshot_file_path = None
+        self.snapshot_start_mode = False
         self.snapshot_start_btn.setEnabled(True)
+        self.test_start_btn.setEnabled(True)
 
     def save_as_new_snapshot(self):
         """保存为新快照"""

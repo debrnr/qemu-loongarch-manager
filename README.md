@@ -15,6 +15,12 @@
 - [📗 快速开始](docs/QUICK_START.md) - Git 推送快速指南
 - [📙 Git 详细指南](docs/GIT_PUSH_GUIDE.md) - 完整的 Git 操作说明
 - [📕 项目总结](docs/PROJECT_SUMMARY.md) - 项目整理和统计信息
+- [📔 EXE 命名规则](docs/EXE_NAMING_RULES.md) - 版本号格式说明
+- [ 发布指南](docs/RELEASE_GUIDE.md) - 如何发布到各平台
+- [⚡ 快速发布](docs/QUICK_RELEASE.md) - 一键发布流程
+- [📊 发布检查清单](docs/PUBLISH_CHECKLIST.md) - 多平台发布状态跟踪
+- [📋 发布状态报告](docs/PUBLISH_STATUS.md) - 当前发布进度
+- [📝 Release 模板](docs/RELEASE_NOTES_v260521-A4.md) - v260521-A4 版本说明
 
 ---
 
