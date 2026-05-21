@@ -22,7 +22,7 @@ def build():
         "--noconfirm",         # 不确认覆盖
         # 添加数据文件（如果有的话）
         # "--add-data", "config.json;.",
-        "vm_manager.py"
+        "..\vm_manager.py"
     ]
 
     print("开始打包...")

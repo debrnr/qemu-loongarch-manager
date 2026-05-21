@@ -12,6 +12,12 @@ import threading
 import json
 from pathlib import Path
 
+# 导入版本信息
+try:
+    from version import VERSION_STR
+except ImportError:
+    VERSION_STR = "QML v1.0"
+
 
 def get_resource_path(relative_path):
     """获取资源文件路径（支持开发和打包后的环境）"""
@@ -100,6 +106,79 @@ class VMRunner(QThread):
                     pass
 
 
+class BackupThread(QThread):
+    """在后台线程中执行备份操作"""
+    progress_signal = pyqtSignal(str)
+    finished_signal = pyqtSignal(bool, str)
+
+    def __init__(self, qemu_img, source, target, backup_type="full"):
+        super().__init__()
+        self.qemu_img = qemu_img
+        self.source = source
+        self.target = target
+        self.backup_type = backup_type
+        self.process = None
+        self.running = False
+
+    def run(self):
+        self.running = True
+        try:
+            if self.backup_type == "full":
+                # 完整备份：使用 convert -c 进行压缩复制
+                cmd = [
+                    self.qemu_img,
+                    "convert", "-O", "qcow2", "-c",
+                    "-p",  # 显示进度
+                    self.source, self.target
+                ]
+            else:
+                # 增量备份：创建外部快照
+                cmd = [
+                    self.qemu_img,
+                    "create", "-f", "qcow2",
+                    "-b", self.source,
+                    "-F", "qcow2",
+                    self.target
+                ]
+
+            self.process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                universal_newlines=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+
+            # 读取输出并发送进度信号
+            for line in iter(self.process.stdout.readline, ''):
+                if not self.running:
+                    break
+                if line:
+                    self.progress_signal.emit(line.strip())
+
+            self.process.wait()
+
+            if self.process.returncode == 0:
+                self.finished_signal.emit(True, "备份成功")
+            else:
+                self.finished_signal.emit(False, f"备份失败，返回码: {self.process.returncode}")
+
+        except Exception as e:
+            self.finished_signal.emit(False, f"备份出错: {str(e)}")
+
+    def stop(self):
+        self.running = False
+        if self.process:
+            try:
+                self.process.terminate()
+                self.process.wait(timeout=5)
+            except:
+                try:
+                    self.process.kill()
+                except:
+                    pass
+
+
 class ModernButton(QPushButton):
     """自定义现代风格按钮"""
     def __init__(self, text, color="#2196F3", parent=None):
@@ -138,7 +217,7 @@ class ModernButton(QPushButton):
 class VMManager(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("QML - QEMU Manager for LoongArch")
+        self.setWindowTitle(f"QML - QEMU Manager for LoongArch ({VERSION_STR})")
         self.setMinimumSize(600, 400)
         self.resize(900, 700)
         self.vm_runner = None
@@ -838,9 +917,19 @@ class VMManager(QMainWindow):
 
     def browse_backup_path(self):
         """浏览备份保存路径"""
+        # 确保默认备份目录存在
+        default_backup_dir = ".\\disk\\backup"
+        os.makedirs(default_backup_dir, exist_ok=True)
+
+        # 生成默认备份文件名
+        hdd_name = os.path.basename(self.config['hdd_path'])
+        base_name, _ = os.path.splitext(hdd_name)
+        default_name = f"{base_name}_backup_{self.get_timestamp()}.qcow2"
+        default_path = os.path.join(default_backup_dir, default_name)
+
         file_path, _ = QFileDialog.getSaveFileName(
             self, "选择备份保存位置",
-            self.backup_path_input.text() or f"{self.config['hdd_path']}.backup",
+            self.backup_path_input.text() or default_path,
             "QCOW2 备份 (*.qcow2);;所有文件 (*.*)"
         )
         if file_path:
@@ -856,9 +945,12 @@ class VMManager(QMainWindow):
             return
 
         if not backup_path:
-            # 自动生成备份路径
-            base, ext = os.path.splitext(hdd_path)
-            backup_path = f"{base}_backup_{self.get_timestamp()}{ext}"
+            # 自动生成备份路径到默认备份目录
+            backup_dir = ".\\disk\\backup"
+            os.makedirs(backup_dir, exist_ok=True)
+            hdd_name = os.path.basename(hdd_path)
+            base, ext = os.path.splitext(hdd_name)
+            backup_path = os.path.join(backup_dir, f"{base}_backup_{self.get_timestamp()}{ext}")
             self.backup_path_input.setText(backup_path)
 
         # 检查备份路径是否已存在
@@ -871,32 +963,77 @@ class VMManager(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
+        # 获取 qemu-img 路径
+        qemu_img = self.get_qemu_img()
+        if not qemu_img:
+            return
+
         self.log_text.append(f"开始完整备份...")
         self.log_text.append(f"源: {hdd_path}")
         self.log_text.append(f"目标: {backup_path}")
-        self.status_bar.showMessage("正在备份磁盘...")
 
-        # 使用 qemu-img convert 进行备份（会创建独立的副本）
-        result = self.run_qemu_img([
-            "convert", "-O", "qcow2", "-c",
-            hdd_path, backup_path
-        ])
+        # 创建进度对话框
+        progress_dialog = QMessageBox(self)
+        progress_dialog.setWindowTitle("备份进行中")
+        progress_dialog.setText("正在备份磁盘，请稍候...\n\n这可能需要几分钟时间。")
+        progress_dialog.setStandardButtons(QMessageBox.StandardButton.Cancel)
+        progress_dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
 
-        if result and result.returncode == 0:
-            self.log_text.append(f"✅ 完整备份成功: {backup_path}")
-            QMessageBox.information(self, "成功", f"备份完成！\n保存位置:\n{backup_path}")
+        # 显示文件大小信息
+        source_size = os.path.getsize(hdd_path) / (1024 * 1024)
+        progress_dialog.setInformativeText(f"源文件大小: {source_size:.2f} MB\n目标: {backup_path}")
 
-            # 显示备份文件大小
-            if os.path.exists(backup_path):
-                size = os.path.getsize(backup_path)
-                size_mb = size / (1024 * 1024)
-                self.log_text.append(f"备份文件大小: {size_mb:.2f} MB")
-        else:
-            error = result.stderr if result else "未知错误"
-            self.log_text.append(f"❌ 备份失败: {error}")
-            QMessageBox.critical(self, "错误", f"备份失败:\n{error}")
+        # 创建备份线程
+        self.backup_thread = BackupThread(qemu_img, hdd_path, backup_path, "full")
 
-        self.status_bar.showMessage("就绪")
+        # 连接信号
+        def on_progress(msg):
+            # 解析进度信息（qemu-img 会输出百分比）
+            if "%" in msg:
+                progress_dialog.setText(f"正在备份磁盘...\n\n进度: {msg}")
+            else:
+                progress_dialog.setText(f"正在备份磁盘...\n\n{msg}")
+
+        def on_finished(success, msg):
+            progress_dialog.close()
+            if success:
+                self.log_text.append(f"✅ 完整备份成功: {backup_path}")
+                # 显示备份文件大小
+                if os.path.exists(backup_path):
+                    size = os.path.getsize(backup_path)
+                    size_mb = size / (1024 * 1024)
+                    self.log_text.append(f"备份文件大小: {size_mb:.2f} MB")
+                    # 计算压缩率
+                    ratio = (1 - size_mb / source_size) * 100 if source_size > 0 else 0
+                    QMessageBox.information(
+                        self, "成功",
+                        f"备份完成！\n\n保存位置:\n{backup_path}\n\n"
+                        f"原文件: {source_size:.2f} MB\n"
+                        f"备份后: {size_mb:.2f} MB\n"
+                        f"压缩率: {ratio:.1f}%"
+                    )
+            else:
+                self.log_text.append(f"❌ 备份失败: {msg}")
+                QMessageBox.critical(self, "错误", f"备份失败:\n{msg}")
+                # 清理失败的备份文件
+                if os.path.exists(backup_path):
+                    os.remove(backup_path)
+            self.status_bar.showMessage("就绪")
+
+        self.backup_thread.progress_signal.connect(on_progress)
+        self.backup_thread.finished_signal.connect(on_finished)
+
+        # 启动备份线程
+        self.backup_thread.start()
+
+        # 显示进度对话框
+        result = progress_dialog.exec()
+
+        # 如果用户点击取消，停止备份
+        if result == QMessageBox.StandardButton.Cancel:
+            self.backup_thread.stop()
+            self.log_text.append("⚠️ 备份已取消")
+            self.status_bar.showMessage("备份已取消")
 
     def incremental_backup_disk(self):
         """增量备份磁盘（使用 backing_file）"""
@@ -908,9 +1045,12 @@ class VMManager(QMainWindow):
             return
 
         if not backup_path:
-            # 自动生成备份路径
-            base, ext = os.path.splitext(hdd_path)
-            backup_path = f"{base}_incremental_{self.get_timestamp()}{ext}"
+            # 自动生成备份路径到默认备份目录
+            backup_dir = ".\\disk\\backup"
+            os.makedirs(backup_dir, exist_ok=True)
+            hdd_name = os.path.basename(hdd_path)
+            base, ext = os.path.splitext(hdd_name)
+            backup_path = os.path.join(backup_dir, f"{base}_incremental_{self.get_timestamp()}{ext}")
             self.backup_path_input.setText(backup_path)
 
         reply = QMessageBox.question(
@@ -923,38 +1063,70 @@ class VMManager(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
+        # 获取 qemu-img 路径
+        qemu_img = self.get_qemu_img()
+        if not qemu_img:
+            return
+
         self.log_text.append(f"开始增量备份...")
         self.log_text.append(f"源: {hdd_path}")
         self.log_text.append(f"目标: {backup_path}")
-        self.status_bar.showMessage("正在创建增量备份...")
 
-        # 使用 create -b 创建增量备份（外部快照）
-        result = self.run_qemu_img([
-            "create", "-f", "qcow2",
-            "-b", hdd_path,
-            "-F", "qcow2",
-            backup_path
-        ])
+        # 创建进度对话框
+        progress_dialog = QMessageBox(self)
+        progress_dialog.setWindowTitle("增量备份进行中")
+        progress_dialog.setText("正在创建增量备份，请稍候...\n\n这个操作很快完成。")
+        progress_dialog.setStandardButtons(QMessageBox.StandardButton.Cancel)
+        progress_dialog.setDefaultButton(QMessageBox.StandardButton.Cancel)
 
-        if result and result.returncode == 0:
-            self.log_text.append(f"✅ 增量备份成功: {backup_path}")
-            QMessageBox.information(
-                self, "成功",
-                f"增量备份完成！\n保存位置:\n{backup_path}\n\n"
-                "注意：此备份依赖于原磁盘文件，请勿删除原文件。"
-            )
+        # 显示文件大小信息
+        source_size = os.path.getsize(hdd_path) / (1024 * 1024)
+        progress_dialog.setInformativeText(f"源文件大小: {source_size:.2f} MB\n目标: {backup_path}")
 
-            # 显示备份文件大小
-            if os.path.exists(backup_path):
-                size = os.path.getsize(backup_path)
-                size_kb = size / 1024
-                self.log_text.append(f"备份文件大小: {size_kb:.2f} KB (增量)")
-        else:
-            error = result.stderr if result else "未知错误"
-            self.log_text.append(f"❌ 增量备份失败: {error}")
-            QMessageBox.critical(self, "错误", f"增量备份失败:\n{error}")
+        # 创建备份线程
+        self.backup_thread = BackupThread(qemu_img, hdd_path, backup_path, "incremental")
 
-        self.status_bar.showMessage("就绪")
+        # 连接信号
+        def on_progress(msg):
+            progress_dialog.setText(f"正在创建增量备份...\n\n{msg}")
+
+        def on_finished(success, msg):
+            progress_dialog.close()
+            if success:
+                self.log_text.append(f"✅ 增量备份成功: {backup_path}")
+                # 显示备份文件大小
+                if os.path.exists(backup_path):
+                    size = os.path.getsize(backup_path)
+                    size_kb = size / 1024
+                    self.log_text.append(f"备份文件大小: {size_kb:.2f} KB (增量)")
+                    QMessageBox.information(
+                        self, "成功",
+                        f"增量备份完成！\n\n保存位置:\n{backup_path}\n\n"
+                        f"备份文件大小: {size_kb:.2f} KB\n\n"
+                        "注意：此备份依赖于原磁盘文件，请勿删除原文件。"
+                    )
+            else:
+                self.log_text.append(f"❌ 增量备份失败: {msg}")
+                QMessageBox.critical(self, "错误", f"增量备份失败:\n{msg}")
+                # 清理失败的备份文件
+                if os.path.exists(backup_path):
+                    os.remove(backup_path)
+            self.status_bar.showMessage("就绪")
+
+        self.backup_thread.progress_signal.connect(on_progress)
+        self.backup_thread.finished_signal.connect(on_finished)
+
+        # 启动备份线程
+        self.backup_thread.start()
+
+        # 显示进度对话框
+        result = progress_dialog.exec()
+
+        # 如果用户点击取消，停止备份
+        if result == QMessageBox.StandardButton.Cancel:
+            self.backup_thread.stop()
+            self.log_text.append("⚠️ 增量备份已取消")
+            self.status_bar.showMessage("备份已取消")
 
     def refresh_disk_info(self):
         """刷新磁盘信息"""
@@ -1018,41 +1190,65 @@ class VMManager(QMainWindow):
             QMessageBox.critical(self, "错误", f"扩容失败:\n{error}")
 
     def compact_disk(self):
-        """压缩磁盘"""
+        """压缩磁盘（保存到新文件，文件名加入时间戳）"""
         hdd_path = self.config['hdd_path']
 
         if not os.path.exists(hdd_path):
             QMessageBox.critical(self, "错误", "磁盘文件不存在！")
             return
 
+        # 构建输出路径：原目录 + 原文件名 + _compressed_时间戳.qcow2
+        hdd_dir = os.path.dirname(hdd_path)
+        hdd_name = os.path.basename(hdd_path)
+        base_name, ext = os.path.splitext(hdd_name)
+        timestamp = self.get_timestamp()
+        output_path = os.path.join(hdd_dir, f"{base_name}_compressed_{timestamp}{ext}")
+
         reply = QMessageBox.question(
             self, "确认压缩",
-            "压缩磁盘可以减小实际占用空间，但可能需要较长时间。\n\n是否继续?",
+            f"压缩磁盘可以减小实际占用空间，但可能需要较长时间。\n\n"
+            f"输出文件:\n{output_path}\n\n"
+            f"是否继续?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
         self.log_text.append("正在压缩磁盘...")
-        result = self.run_qemu_img(["convert", "-O", "qcow2", "-c", hdd_path, hdd_path + ".tmp"])
+        self.log_text.append(f"源文件: {hdd_path}")
+        self.log_text.append(f"输出文件: {output_path}")
+        self.status_bar.showMessage("正在压缩磁盘...")
+
+        result = self.run_qemu_img(["convert", "-O", "qcow2", "-c", hdd_path, output_path])
 
         if result and result.returncode == 0:
-            # 替换原文件
-            try:
-                os.replace(hdd_path + ".tmp", hdd_path)
-                self.log_text.append("✅ 磁盘压缩成功！")
-                QMessageBox.information(self, "成功", "磁盘压缩成功！")
-                self.refresh_disk_info()
-            except Exception as e:
-                self.log_text.append(f"❌ 替换文件失败: {str(e)}")
-                QMessageBox.critical(self, "错误", str(e))
+            self.log_text.append(f"✅ 磁盘压缩成功: {output_path}")
+
+            # 显示压缩前后大小
+            if os.path.exists(hdd_path) and os.path.exists(output_path):
+                original_size = os.path.getsize(hdd_path) / (1024 * 1024)
+                compressed_size = os.path.getsize(output_path) / (1024 * 1024)
+                ratio = (1 - compressed_size / original_size) * 100 if original_size > 0 else 0
+                self.log_text.append(f"原文件大小: {original_size:.2f} MB")
+                self.log_text.append(f"压缩后大小: {compressed_size:.2f} MB")
+                self.log_text.append(f"压缩率: {ratio:.1f}%")
+
+            QMessageBox.information(
+                self, "成功",
+                f"磁盘压缩成功！\n\n"
+                f"保存位置:\n{output_path}\n\n"
+                f"压缩率: {ratio:.1f}%"
+            )
+            self.refresh_disk_info()
         else:
             error = result.stderr if result else "未知错误"
             self.log_text.append(f"❌ 压缩失败: {error}")
             QMessageBox.critical(self, "错误", f"压缩失败:\n{error}")
             # 清理临时文件
-            if os.path.exists(hdd_path + ".tmp"):
-                os.remove(hdd_path + ".tmp")
+            if os.path.exists(output_path):
+                os.remove(output_path)
+
+        self.status_bar.showMessage("就绪")
 
     def convert_disk(self):
         """转换磁盘格式"""
