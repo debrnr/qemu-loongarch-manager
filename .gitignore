@@ -28,6 +28,8 @@ ENV/
 # PyInstaller
 *.manifest
 *.spec.backup
+*_*.spec
+build_with_version.py
 
 # IDE
 .vscode/

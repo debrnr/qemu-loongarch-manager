@@ -138,7 +138,7 @@ class ModernButton(QPushButton):
 class VMManager(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Deepin LoongArch VM 管理器")
+        self.setWindowTitle("QML - QEMU Manager for LoongArch")
         self.setMinimumSize(600, 400)
         self.resize(900, 700)
         self.vm_runner = None
