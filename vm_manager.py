@@ -149,6 +149,7 @@ class VMManager(QMainWindow):
             "qemu_dir": ".\\qemu",
             "iso_path": ".\\iso\\deepin-desktop-community-25.1.0-loong64.iso",
             "hdd_path": ".\\disk\\deepin_loong64.qcow2",
+            "snapshot_dir": ".\\disk\\snapshot",
             "memory": 12288,
             "cpu_cores": 8,
             "spice_port": 5900,
@@ -580,6 +581,34 @@ class VMManager(QMainWindow):
 
         layout.addWidget(ops_group)
 
+        # 备份操作
+        backup_group = QGroupBox("💾 备份操作")
+        backup_layout = QVBoxLayout(backup_group)
+
+        # 备份路径选择
+        backup_path_layout = QHBoxLayout()
+        backup_path_layout.addWidget(QLabel("备份路径:"))
+        self.backup_path_input = QLineEdit()
+        self.backup_path_input.setPlaceholderText("选择备份保存位置...")
+        backup_path_layout.addWidget(self.backup_path_input)
+        backup_browse_btn = QPushButton("浏览...")
+        backup_browse_btn.clicked.connect(self.browse_backup_path)
+        backup_path_layout.addWidget(backup_browse_btn)
+        backup_layout.addLayout(backup_path_layout)
+
+        # 备份按钮
+        backup_btn_layout = QHBoxLayout()
+        full_backup_btn = ModernButton("💾 完整备份", "#9C27B0")
+        full_backup_btn.clicked.connect(self.full_backup_disk)
+        backup_btn_layout.addWidget(full_backup_btn)
+
+        incremental_backup_btn = ModernButton("📦 增量备份", "#673AB7")
+        incremental_backup_btn.clicked.connect(self.incremental_backup_disk)
+        backup_btn_layout.addWidget(incremental_backup_btn)
+        backup_layout.addLayout(backup_btn_layout)
+
+        layout.addWidget(backup_group)
+
         # 其他操作
         other_group = QGroupBox("其他操作")
         other_layout = QHBoxLayout(other_group)
@@ -625,6 +654,25 @@ class VMManager(QMainWindow):
         create_layout.addWidget(create_btn, 2, 0, 1, 2)
 
         layout.addWidget(create_group)
+
+        # 快照路径设置
+        path_group = QGroupBox("快照保存路径")
+        path_layout = QGridLayout(path_group)
+
+        path_layout.addWidget(QLabel("快照目录:"), 0, 0)
+        self.snapshot_dir_input = QLineEdit(self.config.get('snapshot_dir', '.\\disk\\snapshot'))
+        self.snapshot_dir_input.setPlaceholderText("选择快照保存目录...")
+        path_layout.addWidget(self.snapshot_dir_input, 0, 1)
+
+        snapshot_browse_btn = QPushButton("浏览...")
+        snapshot_browse_btn.clicked.connect(self.browse_snapshot_dir)
+        path_layout.addWidget(snapshot_browse_btn, 0, 2)
+
+        save_path_btn = QPushButton("💾 保存路径设置")
+        save_path_btn.clicked.connect(self.save_snapshot_dir)
+        path_layout.addWidget(save_path_btn, 1, 0, 1, 3)
+
+        layout.addWidget(path_group)
 
         # 快照列表
         list_group = QGroupBox("快照列表")
@@ -788,6 +836,126 @@ class VMManager(QMainWindow):
             QMessageBox.critical(self, "错误", f"执行命令失败:\n{str(e)}")
             return None
 
+    def browse_backup_path(self):
+        """浏览备份保存路径"""
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "选择备份保存位置",
+            self.backup_path_input.text() or f"{self.config['hdd_path']}.backup",
+            "QCOW2 备份 (*.qcow2);;所有文件 (*.*)"
+        )
+        if file_path:
+            self.backup_path_input.setText(file_path)
+
+    def full_backup_disk(self):
+        """完整备份磁盘"""
+        hdd_path = self.config['hdd_path']
+        backup_path = self.backup_path_input.text().strip()
+
+        if not os.path.exists(hdd_path):
+            QMessageBox.critical(self, "错误", "源磁盘文件不存在！")
+            return
+
+        if not backup_path:
+            # 自动生成备份路径
+            base, ext = os.path.splitext(hdd_path)
+            backup_path = f"{base}_backup_{self.get_timestamp()}{ext}"
+            self.backup_path_input.setText(backup_path)
+
+        # 检查备份路径是否已存在
+        if os.path.exists(backup_path):
+            reply = QMessageBox.question(
+                self, "确认覆盖",
+                f"备份文件已存在:\n{backup_path}\n\n是否覆盖?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+        self.log_text.append(f"开始完整备份...")
+        self.log_text.append(f"源: {hdd_path}")
+        self.log_text.append(f"目标: {backup_path}")
+        self.status_bar.showMessage("正在备份磁盘...")
+
+        # 使用 qemu-img convert 进行备份（会创建独立的副本）
+        result = self.run_qemu_img([
+            "convert", "-O", "qcow2", "-c",
+            hdd_path, backup_path
+        ])
+
+        if result and result.returncode == 0:
+            self.log_text.append(f"✅ 完整备份成功: {backup_path}")
+            QMessageBox.information(self, "成功", f"备份完成！\n保存位置:\n{backup_path}")
+
+            # 显示备份文件大小
+            if os.path.exists(backup_path):
+                size = os.path.getsize(backup_path)
+                size_mb = size / (1024 * 1024)
+                self.log_text.append(f"备份文件大小: {size_mb:.2f} MB")
+        else:
+            error = result.stderr if result else "未知错误"
+            self.log_text.append(f"❌ 备份失败: {error}")
+            QMessageBox.critical(self, "错误", f"备份失败:\n{error}")
+
+        self.status_bar.showMessage("就绪")
+
+    def incremental_backup_disk(self):
+        """增量备份磁盘（使用 backing_file）"""
+        hdd_path = self.config['hdd_path']
+        backup_path = self.backup_path_input.text().strip()
+
+        if not os.path.exists(hdd_path):
+            QMessageBox.critical(self, "错误", "源磁盘文件不存在！")
+            return
+
+        if not backup_path:
+            # 自动生成备份路径
+            base, ext = os.path.splitext(hdd_path)
+            backup_path = f"{base}_incremental_{self.get_timestamp()}{ext}"
+            self.backup_path_input.setText(backup_path)
+
+        reply = QMessageBox.question(
+            self, "增量备份",
+            f"将创建增量备份:\n{backup_path}\n\n"
+            "增量备份依赖于原磁盘文件，请确保原文件不会被移动或删除。\n"
+            "是否继续?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.log_text.append(f"开始增量备份...")
+        self.log_text.append(f"源: {hdd_path}")
+        self.log_text.append(f"目标: {backup_path}")
+        self.status_bar.showMessage("正在创建增量备份...")
+
+        # 使用 create -b 创建增量备份（外部快照）
+        result = self.run_qemu_img([
+            "create", "-f", "qcow2",
+            "-b", hdd_path,
+            "-F", "qcow2",
+            backup_path
+        ])
+
+        if result and result.returncode == 0:
+            self.log_text.append(f"✅ 增量备份成功: {backup_path}")
+            QMessageBox.information(
+                self, "成功",
+                f"增量备份完成！\n保存位置:\n{backup_path}\n\n"
+                "注意：此备份依赖于原磁盘文件，请勿删除原文件。"
+            )
+
+            # 显示备份文件大小
+            if os.path.exists(backup_path):
+                size = os.path.getsize(backup_path)
+                size_kb = size / 1024
+                self.log_text.append(f"备份文件大小: {size_kb:.2f} KB (增量)")
+        else:
+            error = result.stderr if result else "未知错误"
+            self.log_text.append(f"❌ 增量备份失败: {error}")
+            QMessageBox.critical(self, "错误", f"增量备份失败:\n{error}")
+
+        self.status_bar.showMessage("就绪")
+
     def refresh_disk_info(self):
         """刷新磁盘信息"""
         hdd_path = self.config['hdd_path']
@@ -918,6 +1086,65 @@ class VMManager(QMainWindow):
             self.log_text.append(f"❌ 转换失败: {error}")
             QMessageBox.critical(self, "错误", f"转换失败:\n{error}")
 
+    def build_command_for_test(self, temp_disk_path):
+        """构建测试启动的 QEMU 命令（使用临时磁盘）"""
+        qemu_exe = os.path.join(self.config['qemu_dir'], "qemu-system-loongarch64.exe")
+        bios_path = os.path.join(self.config['qemu_dir'], "share", "edk2-loongarch64-code.fd")
+
+        cmd = [
+            qemu_exe,
+            "-machine", "virt",
+            "-accel", "tcg,thread=multi",
+            "-cpu", "max",
+            "-smp", str(self.config['cpu_cores']),
+            "-m", str(self.config['memory']),
+            "-rtc", "base=localtime",
+            "-bios", bios_path,
+            "-vga", "none",
+            "-device", "virtio-gpu-pci",
+            "-spice", f"port={self.config['spice_port']},addr=127.0.0.1,disable-ticketing=on",
+            "-device", "qemu-xhci",
+            "-device", "usb-kbd",
+            "-device", "usb-tablet",
+            "-hda", temp_disk_path,  # 使用临时磁盘
+            "-boot", "c",
+            "-netdev", f"user,id=net0,hostfwd=tcp::{self.config['rdp_port']}-:3389",
+            "-device", "e1000,netdev=net0",
+            "-device", "intel-hda",
+            "-device", "hda-output",
+            "-device", "virtio-serial-pci",
+            "-device", "virtserialport,chardev=spicechannel0,name=com.redhat.spice.0",
+            "-chardev", "spicevmc,id=spicechannel0,name=vdagent"
+        ]
+
+        return cmd
+
+    def browse_snapshot_dir(self):
+        """浏览快照保存目录"""
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "选择快照保存目录",
+            self.snapshot_dir_input.text() or ".\\disk\\snapshot"
+        )
+        if dir_path:
+            self.snapshot_dir_input.setText(dir_path)
+
+    def save_snapshot_dir(self):
+        """保存快照目录设置"""
+        snapshot_dir = self.snapshot_dir_input.text().strip()
+        if not snapshot_dir:
+            snapshot_dir = ".\\disk\\snapshot"
+
+        # 确保目录存在
+        try:
+            os.makedirs(snapshot_dir, exist_ok=True)
+        except Exception as e:
+            QMessageBox.warning(self, "警告", f"创建目录失败: {e}")
+            return
+
+        self.config['snapshot_dir'] = snapshot_dir
+        self.save_config()
+        QMessageBox.information(self, "成功", f"快照保存路径已设置:\n{snapshot_dir}")
+
     def check_disk(self):
         """检查磁盘"""
         hdd_path = self.config['hdd_path']
@@ -986,7 +1213,7 @@ class VMManager(QMainWindow):
             QMessageBox.critical(self, "错误", str(e))
 
     def create_snapshot(self):
-        """创建快照"""
+        """创建快照（外部快照保存到指定目录）"""
         hdd_path = self.config['hdd_path']
         name = self.snapshot_name.text().strip()
         desc = self.snapshot_desc.text().strip()
@@ -999,18 +1226,55 @@ class VMManager(QMainWindow):
             QMessageBox.critical(self, "错误", "磁盘文件不存在！")
             return
 
+        # 获取快照保存目录
+        snapshot_dir = self.config.get('snapshot_dir', '.\\disk\\snapshot')
+
+        # 确保目录存在
+        try:
+            os.makedirs(snapshot_dir, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"创建快照目录失败:\n{str(e)}")
+            return
+
+        # 构建快照文件路径
+        snapshot_filename = f"{name}.qcow2"
+        snapshot_path = os.path.join(snapshot_dir, snapshot_filename)
+
+        # 如果文件已存在，添加时间戳
+        if os.path.exists(snapshot_path):
+            snapshot_filename = f"{name}_{self.get_timestamp()}.qcow2"
+            snapshot_path = os.path.join(snapshot_dir, snapshot_filename)
+
         self.log_text.append(f"正在创建快照: {name}...")
+        self.log_text.append(f"保存位置: {snapshot_path}")
 
-        # 构建快照标签
-        tag = name
-        if desc:
-            tag = f"{name},{desc}"
-
-        result = self.run_qemu_img(["snapshot", "-c", tag, hdd_path])
+        # 创建外部快照（使用 backing_file）
+        result = self.run_qemu_img([
+            "create", "-f", "qcow2",
+            "-b", hdd_path,
+            "-F", "qcow2",
+            snapshot_path
+        ])
 
         if result and result.returncode == 0:
-            self.log_text.append(f"✅ 快照创建成功: {name}")
-            QMessageBox.information(self, "成功", f"快照 '{name}' 创建成功！")
+            # 保存描述信息到同名文件
+            if desc:
+                try:
+                    desc_path = os.path.join(snapshot_dir, f"{name}.txt")
+                    with open(desc_path, 'w', encoding='utf-8') as f:
+                        f.write(f"快照名称: {name}\n")
+                        f.write(f"描述: {desc}\n")
+                        f.write(f"创建时间: {self.get_timestamp()}\n")
+                        f.write(f"原磁盘: {hdd_path}\n")
+                except:
+                    pass
+
+            self.log_text.append(f"✅ 快照创建成功: {snapshot_path}")
+            QMessageBox.information(
+                self, "成功",
+                f"快照 '{name}' 创建成功！\n\n保存位置:\n{snapshot_path}\n\n"
+                "注意：此快照依赖于原磁盘文件，请勿删除原文件。"
+            )
             self.snapshot_name.clear()
             self.snapshot_desc.clear()
             self.list_snapshots()
@@ -1020,27 +1284,77 @@ class VMManager(QMainWindow):
             QMessageBox.critical(self, "错误", f"创建失败:\n{error}")
 
     def list_snapshots(self):
-        """列出快照"""
+        """列出快照（外部快照文件）"""
         hdd_path = self.config['hdd_path']
+        snapshot_dir = self.config.get('snapshot_dir', '.\\disk\\snapshot')
 
         if not os.path.exists(hdd_path):
             self.snapshot_list.setText("磁盘文件不存在")
             return
 
-        result = self.run_qemu_img(["snapshot", "-l", hdd_path])
+        # 获取外部快照文件列表
+        snapshot_files = []
+        if os.path.exists(snapshot_dir):
+            for file in os.listdir(snapshot_dir):
+                if file.endswith('.qcow2'):
+                    file_path = os.path.join(snapshot_dir, file)
+                    try:
+                        stat = os.stat(file_path)
+                        size_mb = stat.st_size / (1024 * 1024)
+                        mtime = stat.st_mtime
+                        from datetime import datetime
+                        time_str = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+                        name = file[:-6]  # 去掉 .qcow2
 
-        if result and result.returncode == 0:
-            output = result.stdout
-            self.snapshot_list.setText(output if output.strip() else "暂无快照")
+                        # 检查是否有描述文件
+                        desc = ""
+                        desc_path = os.path.join(snapshot_dir, f"{name}.txt")
+                        if os.path.exists(desc_path):
+                            try:
+                                with open(desc_path, 'r', encoding='utf-8') as f:
+                                    for line in f:
+                                        if line.startswith('描述:'):
+                                            desc = line[3:].strip()
+                                            break
+                            except:
+                                pass
+
+                        snapshot_files.append({
+                            'name': name,
+                            'size': size_mb,
+                            'time': time_str,
+                            'desc': desc
+                        })
+                    except:
+                        pass
+
+        if snapshot_files:
+            # 按时间排序
+            snapshot_files.sort(key=lambda x: x['time'], reverse=True)
+
+            output = f"快照保存目录: {snapshot_dir}\n"
+            output += "=" * 60 + "\n"
+            output += f"{'名称':<20} {'大小(MB)':<12} {'创建时间':<20} {'描述'}\n"
+            output += "-" * 60 + "\n"
+
+            for snap in snapshot_files:
+                desc_short = snap['desc'][:15] + '...' if len(snap['desc']) > 15 else snap['desc']
+                output += f"{snap['name']:<20} {snap['size']:<12.2f} {snap['time']:<20} {desc_short}\n"
+
+            output += "=" * 60 + "\n"
+            output += f"共 {len(snapshot_files)} 个外部快照文件\n"
+
+            self.snapshot_list.setText(output)
             self.log_text.append(f"快照列表:\n{output}")
         else:
-            error = result.stderr if result else "获取失败"
-            self.snapshot_list.setText(f"获取失败: {error}")
+            self.snapshot_list.setText(f"暂无外部快照文件\n快照保存目录: {snapshot_dir}")
+            self.log_text.append(f"快照目录 {snapshot_dir} 中没有找到快照文件")
 
     def restore_snapshot(self):
-        """恢复快照"""
+        """恢复快照（从外部快照文件恢复）"""
         hdd_path = self.config['hdd_path']
         name = self.snapshot_name.text().strip()
+        snapshot_dir = self.config.get('snapshot_dir', '.\\disk\\snapshot')
 
         if not name:
             QMessageBox.warning(self, "警告", "请输入要恢复的快照名称！")
@@ -1050,57 +1364,99 @@ class VMManager(QMainWindow):
             QMessageBox.critical(self, "错误", "磁盘文件不存在！")
             return
 
+        # 构建快照文件路径
+        snapshot_path = os.path.join(snapshot_dir, f"{name}.qcow2")
+
+        if not os.path.exists(snapshot_path):
+            QMessageBox.critical(
+                self, "错误",
+                f"找不到快照文件:\n{snapshot_path}\n\n"
+                "请确保快照名称正确，或点击'刷新列表'查看可用快照。"
+            )
+            return
+
         reply = QMessageBox.warning(
             self, "确认恢复",
-            f"恢复到快照 '{name}'?\n\n当前磁盘状态将丢失！",
+            f"将从外部快照 '{name}' 恢复?\n\n"
+            f"快照文件: {snapshot_path}\n\n"
+            "当前磁盘状态将被覆盖！\n\n"
+            "建议先备份当前磁盘！",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self.log_text.append(f"正在恢复到快照: {name}...")
-        result = self.run_qemu_img(["snapshot", "-a", name, hdd_path])
+        self.log_text.append(f"正在从外部快照恢复: {name}...")
+        self.log_text.append(f"快照文件: {snapshot_path}")
+        self.status_bar.showMessage("正在恢复快照...")
+
+        # 将外部快照内容合并回原磁盘
+        # 方法：使用 qemu-img convert 将快照转换为原磁盘
+        result = self.run_qemu_img([
+            "convert", "-O", "qcow2",
+            snapshot_path, hdd_path
+        ])
 
         if result and result.returncode == 0:
-            self.log_text.append(f"✅ 已恢复到快照: {name}")
-            QMessageBox.information(self, "成功", f"已恢复到快照 '{name}'！")
+            self.log_text.append(f"✅ 已从快照恢复: {name}")
+            QMessageBox.information(
+                self, "成功",
+                f"已从快照 '{name}' 恢复！\n\n"
+                f"原磁盘已覆盖为快照内容。"
+            )
         else:
             error = result.stderr if result else "未知错误"
             self.log_text.append(f"❌ 恢复失败: {error}")
             QMessageBox.critical(self, "错误", f"恢复失败:\n{error}")
 
+        self.status_bar.showMessage("就绪")
+
     def delete_snapshot(self):
-        """删除快照"""
-        hdd_path = self.config['hdd_path']
+        """删除快照（删除外部快照文件）"""
         name = self.snapshot_name.text().strip()
+        snapshot_dir = self.config.get('snapshot_dir', '.\\disk\\snapshot')
 
         if not name:
             QMessageBox.warning(self, "警告", "请输入要删除的快照名称！")
             return
 
-        if not os.path.exists(hdd_path):
-            QMessageBox.critical(self, "错误", "磁盘文件不存在！")
+        # 构建快照文件路径
+        snapshot_path = os.path.join(snapshot_dir, f"{name}.qcow2")
+        desc_path = os.path.join(snapshot_dir, f"{name}.txt")
+
+        if not os.path.exists(snapshot_path):
+            QMessageBox.critical(
+                self, "错误",
+                f"找不到快照文件:\n{snapshot_path}"
+            )
             return
 
         reply = QMessageBox.question(
             self, "确认删除",
-            f"确定要删除快照 '{name}'?",
+            f"确定要删除快照 '{name}'?\n\n"
+            f"文件: {snapshot_path}\n\n"
+            "此操作不可恢复！",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
 
         self.log_text.append(f"正在删除快照: {name}...")
-        result = self.run_qemu_img(["snapshot", "-d", name, hdd_path])
 
-        if result and result.returncode == 0:
+        try:
+            # 删除快照文件
+            os.remove(snapshot_path)
+
+            # 删除描述文件（如果存在）
+            if os.path.exists(desc_path):
+                os.remove(desc_path)
+
             self.log_text.append(f"✅ 快照已删除: {name}")
             QMessageBox.information(self, "成功", f"快照 '{name}' 已删除！")
             self.list_snapshots()
-        else:
-            error = result.stderr if result else "未知错误"
-            self.log_text.append(f"❌ 删除失败: {error}")
-            QMessageBox.critical(self, "错误", f"删除失败:\n{error}")
+        except Exception as e:
+            self.log_text.append(f"❌ 删除失败: {str(e)}")
+            QMessageBox.critical(self, "错误", f"删除失败:\n{str(e)}")
 
     def build_command(self):
         """构建 QEMU 启动命令"""
@@ -1213,47 +1569,63 @@ class VMManager(QMainWindow):
         self.stop_vm()
 
     def start_test_vm(self):
-        """测试启动虚拟机（临时运行）"""
+        """测试启动虚拟机（临时运行，使用临时磁盘文件）"""
         # 检查必要文件
         qemu_exe = os.path.join(self.config['qemu_dir'], "qemu-system-loongarch64.exe")
         if not os.path.exists(qemu_exe):
             QMessageBox.critical(self, "错误", f"找不到 QEMU:\n{qemu_exe}")
             return
 
-        if not os.path.exists(self.config['hdd_path']):
+        hdd_path = self.config['hdd_path']
+        if not os.path.exists(hdd_path):
             QMessageBox.critical(self, "错误", "虚拟磁盘不存在！")
             return
 
-        # 检查是否有现有快照作为基准
-        reply = QMessageBox.question(
-            self, "测试启动",
-            "测试启动将运行临时虚拟机，关闭时会提示是否保存更改。\n\n"
-            "是否要在启动前创建一个基准快照（推荐）？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel
-        )
-
-        if reply == QMessageBox.StandardButton.Cancel:
+        # 创建临时目录
+        temp_dir = ".\\disk\\temp"
+        try:
+            os.makedirs(temp_dir, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"创建临时目录失败:\n{str(e)}")
             return
 
-        if reply == QMessageBox.StandardButton.Yes:
-            # 创建基准快照
-            base_snapshot = f"test_base_{self.get_timestamp()}"
-            result = self.run_qemu_img(["snapshot", "-c", base_snapshot, self.config['hdd_path']])
-            if result and result.returncode == 0:
-                self.log_text.append(f"✅ 已创建基准快照: {base_snapshot}")
-                self.test_base_snapshot = base_snapshot
-            else:
-                self.log_text.append("⚠️ 创建基准快照失败，继续测试启动...")
-                self.test_base_snapshot = None
-        else:
-            self.test_base_snapshot = None
+        # 生成临时磁盘文件路径
+        timestamp = self.get_timestamp()
+        temp_disk_name = f"temp_{timestamp}.qcow2"
+        temp_disk_path = os.path.join(temp_dir, temp_disk_name)
+
+        self.log_text.append(f"正在创建临时磁盘文件: {temp_disk_path}...")
+        self.status_bar.showMessage("正在创建临时磁盘...")
+
+        # 创建基于原磁盘的外部快照（临时磁盘）
+        result = self.run_qemu_img([
+            "create", "-f", "qcow2",
+            "-b", hdd_path,
+            "-F", "qcow2",
+            temp_disk_path
+        ])
+
+        if not result or result.returncode != 0:
+            error = result.stderr if result else "未知错误"
+            self.log_text.append(f"❌ 创建临时磁盘失败: {error}")
+            QMessageBox.critical(self, "错误", f"创建临时磁盘失败:\n{error}")
+            self.status_bar.showMessage("就绪")
+            return
+
+        self.log_text.append(f"✅ 临时磁盘创建成功: {temp_disk_path}")
+
+        # 保存临时磁盘路径和原磁盘路径
+        self.test_temp_disk = temp_disk_path
+        self.test_original_disk = hdd_path
 
         # 标记为测试模式
         self.test_mode = True
 
-        cmd = self.build_command()
+        # 构建命令，使用临时磁盘
+        cmd = self.build_command_for_test(temp_disk_path)
         self.log_text.append("=" * 50)
         self.log_text.append("🧪 测试启动虚拟机（临时模式）...")
+        self.log_text.append(f"临时磁盘: {temp_disk_path}")
         self.log_text.append(f"命令: {' '.join(cmd)}")
         self.log_text.append("=" * 50)
 
@@ -1272,14 +1644,21 @@ class VMManager(QMainWindow):
         self.status_bar.showMessage("虚拟机测试运行中...")
 
     def ask_save_test_snapshot(self):
-        """询问是否保存测试快照"""
+        """询问是否保存测试快照（处理临时磁盘）"""
+        temp_disk = getattr(self, 'test_temp_disk', None)
+
+        if not temp_disk or not os.path.exists(temp_disk):
+            self.log_text.append("⚠️ 临时磁盘文件不存在")
+            self.cleanup_test_temp()
+            return
+
         msg = QMessageBox(self)
         msg.setWindowTitle("测试完成")
         msg.setText("测试运行已结束，是否保存更改？")
         msg.setInformativeText(
-            "• 保存快照 — 将当前状态保存为新快照\n"
-            "• 放弃更改 — 恢复到测试前的状态\n"
-            "• 保留更改 — 保持当前状态（不创建快照）"
+            "• 保存快照 — 将临时磁盘保存为快照\n"
+            "• 放弃更改 — 删除临时磁盘\n"
+            "• 保留更改 — 将临时磁盘合并回原磁盘"
         )
 
         save_btn = msg.addButton("💾 保存快照", QMessageBox.ButtonRole.AcceptRole)
@@ -1289,14 +1668,98 @@ class VMManager(QMainWindow):
         msg.exec()
 
         if msg.clickedButton() == save_btn:
-            self.save_test_snapshot()
+            self.save_test_snapshot_from_temp(temp_disk)
         elif msg.clickedButton() == discard_btn:
-            self.discard_test_changes()
+            self.discard_test_temp(temp_disk)
         else:
-            self.log_text.append("✓ 已保留测试更改")
+            self.keep_test_changes(temp_disk)
 
-        # 清理
-        self.test_base_snapshot = None
+        self.cleanup_test_temp()
+
+    def save_test_snapshot_from_temp(self, temp_disk):
+        """将临时磁盘保存为快照"""
+        snapshot_dir = self.config.get('snapshot_dir', '.\\disk\\snapshot')
+
+        # 确保目录存在
+        try:
+            os.makedirs(snapshot_dir, exist_ok=True)
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"创建快照目录失败: {e}")
+            return
+
+        name, ok = QInputDialog.getText(
+            self, "保存快照",
+            "输入快照名称:",
+            QLineEdit.EchoMode.Normal,
+            f"test_{self.get_timestamp()}"
+        )
+
+        if ok and name:
+            snapshot_path = os.path.join(snapshot_dir, f"{name}.qcow2")
+
+            # 转换临时磁盘为独立快照（合并 backing file）
+            self.log_text.append(f"正在保存快照: {snapshot_path}...")
+            result = self.run_qemu_img([
+                "convert", "-O", "qcow2", "-c",
+                temp_disk, snapshot_path
+            ])
+
+            if result and result.returncode == 0:
+                self.log_text.append(f"✅ 测试快照已保存: {snapshot_path}")
+                QMessageBox.information(self, "成功", f"快照 '{name}' 保存成功！")
+            else:
+                error = result.stderr if result else "未知错误"
+                self.log_text.append(f"❌ 保存快照失败: {error}")
+                QMessageBox.critical(self, "错误", f"保存失败:\n{error}")
+
+    def discard_test_temp(self, temp_disk):
+        """放弃临时磁盘"""
+        try:
+            os.remove(temp_disk)
+            self.log_text.append(f"🗑️ 临时磁盘已删除: {temp_disk}")
+        except Exception as e:
+            self.log_text.append(f"⚠️ 删除临时磁盘失败: {str(e)}")
+
+    def keep_test_changes(self, temp_disk):
+        """将临时磁盘更改合并回原磁盘"""
+        original_disk = getattr(self, 'test_original_disk', None)
+        if not original_disk:
+            QMessageBox.critical(self, "错误", "找不到原磁盘路径！")
+            return
+
+        reply = QMessageBox.warning(
+            self, "确认合并",
+            "将临时磁盘的更改合并回原磁盘?\n\n"
+            "原磁盘将被覆盖！",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.log_text.append("正在合并更改到原磁盘...")
+        result = self.run_qemu_img([
+            "convert", "-O", "qcow2",
+            temp_disk, original_disk
+        ])
+
+        if result and result.returncode == 0:
+            self.log_text.append("✅ 更改已合并到原磁盘")
+            QMessageBox.information(self, "成功", "更改已保留到原磁盘！")
+        else:
+            error = result.stderr if result else "未知错误"
+            self.log_text.append(f"❌ 合并失败: {error}")
+            QMessageBox.critical(self, "错误", f"合并失败:\n{error}")
+
+        # 删除临时磁盘
+        try:
+            os.remove(temp_disk)
+        except:
+            pass
+
+    def cleanup_test_temp(self):
+        """清理测试临时变量"""
+        self.test_temp_disk = None
+        self.test_original_disk = None
         self.test_start_btn.setEnabled(True)
 
     def refresh_snapshot_list(self):
@@ -1402,44 +1865,6 @@ class VMManager(QMainWindow):
         self.status_indicator.setText("● 快照模式")
         self.status_indicator.setStyleSheet("color: #E91E63; font-weight: bold;")
         self.status_bar.showMessage(f"虚拟机从快照 '{snapshot_name}' 运行中...")
-
-    def save_test_snapshot(self):
-        """保存测试快照"""
-        name, ok = QInputDialog.getText(
-            self, "保存快照",
-            "输入快照名称:",
-            QLineEdit.EchoMode.Normal,
-            f"test_{self.get_timestamp()}"
-        )
-
-        if ok and name:
-            result = self.run_qemu_img(["snapshot", "-c", name, self.config['hdd_path']])
-            if result and result.returncode == 0:
-                self.log_text.append(f"✅ 测试快照已保存: {name}")
-                QMessageBox.information(self, "成功", f"快照 '{name}' 保存成功！")
-            else:
-                error = result.stderr if result else "未知错误"
-                self.log_text.append(f"❌ 保存快照失败: {error}")
-                QMessageBox.critical(self, "错误", f"保存失败:\n{error}")
-
-    def discard_test_changes(self):
-        """放弃测试更改，恢复到基准快照"""
-        if self.test_base_snapshot:
-            self.log_text.append(f"正在恢复到基准快照: {self.test_base_snapshot}...")
-            result = self.run_qemu_img(["snapshot", "-a", self.test_base_snapshot, self.config['hdd_path']])
-            if result and result.returncode == 0:
-                self.log_text.append("✅ 已恢复到测试前状态")
-                QMessageBox.information(self, "成功", "已放弃测试更改，恢复到测试前状态！")
-
-                # 删除临时基准快照
-                self.run_qemu_img(["snapshot", "-d", self.test_base_snapshot, self.config['hdd_path']])
-            else:
-                error = result.stderr if result else "未知错误"
-                self.log_text.append(f"❌ 恢复失败: {error}")
-                QMessageBox.critical(self, "错误", f"恢复失败:\n{error}")
-        else:
-            self.log_text.append("⚠️ 没有基准快照，无法自动恢复")
-            QMessageBox.warning(self, "警告", "没有创建基准快照，请手动管理快照！")
 
     def ask_save_snapshot_changes(self):
         """询问从快照启动后是否保存更改"""
