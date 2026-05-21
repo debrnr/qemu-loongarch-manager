@@ -1,54 +1,31 @@
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
-*.so
-.Python
-build/
-develop-eggs/
-dist/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
 *.egg-info/
-.installed.cfg
-*.egg
+.eggs/
 
 # Virtual Environment
 venv/
-env/
-ENV/
-.venv
 
 # PyInstaller
-*.manifest
-*.spec.backup
-*_*.spec
-build_with_version.py
-
-# Release Notes (auto-generated)
-RELEASE_NOTES_*.md
+*.spec
+dist/
 
 # IDE
 .vscode/
 .idea/
 *.swp
-*.swo
 *~
 
 # OS
 .DS_Store
 Thumbs.db
-desktop.ini
 
-# Project specific
+# Project specific - 运行时目录（不提交到 Git）
 vm_config.json
-*.log
 qemu/
 iso/
 disk/
+loongshare/
+snapshots/
+temp/
