@@ -31,6 +31,9 @@ ENV/
 *_*.spec
 build_with_version.py
 
+# Release Notes (auto-generated)
+RELEASE_NOTES_*.md
+
 # IDE
 .vscode/
 .idea/
