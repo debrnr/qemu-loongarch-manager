@@ -56,6 +56,19 @@
 
 ---
 
+### 📔 [EXE_NAMING_RULES.md](EXE_NAMING_RULES.md) - EXE 文件命名规则
+**适合人群**: 开发者和发布管理人员  
+**内容概要**:
+- 版本号格式详解（QML_YYMMDD_HM）
+- 日期和时间代码说明
+- 完整示例和查询表
+- 生成的文件类型说明
+- 最佳实践和使用场景
+
+👉 **打包发布前必读**
+
+---
+
 ## 🎯 快速导航
 
 ### 我是新用户，想开始使用
@@ -68,7 +81,12 @@
 → 阅读 [PROJECT_SUMMARY.md](PROJECT_SUMMARY.md)
 
 ### 我需要打包程序为 EXE
-→ 查看 [README.md](README.md) 中的"打包为可执行文件"章节
+→ 查看 [README.md](README.md) 中的"打包为可执行文件"章节  
+→ 了解版本命名规则：[EXE_NAMING_RULES.md](EXE_NAMING_RULES.md)
+
+### 我要发布新版本
+→ 先阅读 [EXE_NAMING_RULES.md](EXE_NAMING_RULES.md) 了解命名规范  
+→ 然后使用打包脚本生成带版本号的 exe
 
 ---
 
@@ -80,7 +98,8 @@ LoongarchWorkstationManagerGui/
 │   ├── README.md             # 项目说明
 │   ├── QUICK_START.md        # 快速开始
 │   ├── GIT_PUSH_GUIDE.md     # Git 推送指南
-│   └── PROJECT_SUMMARY.md    # 项目总结
+│   ├── PROJECT_SUMMARY.md    # 项目总结
+│   └── EXE_NAMING_RULES.md   # EXE 命名规则 ⭐新增
 ├── vm_manager.py              # 主程序
 ├── build_exe.py               # 打包脚本
 ├── setup.py                   # 安装配置
