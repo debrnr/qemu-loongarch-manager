@@ -2,7 +2,21 @@
 
 欢迎来到 Deepin LoongArch VM Manager 的文档中心！
 
-## 📖 文档列表
+##  文档列表
+
+### 🗂️ [FILE_STRUCTURE.md](FILE_STRUCTURE.md) - 文件结构说明 ⭐新增
+**适合人群**: 需要了解项目组织的用户  
+**内容概要**:
+- 根目录文件说明
+- docs/ 文档目录详解
+- scripts/ 脚本目录介绍
+- archive/ 归档目录说明
+- 运行时目录结构
+- 快速导航和使用建议
+
+👉 **了解项目文件组织时阅读**
+
+---
 
 ### 📘 [README.md](README.md) - 项目说明
 **适合人群**: 所有用户  
