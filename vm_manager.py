@@ -139,7 +139,8 @@ class VMManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Deepin LoongArch VM 管理器")
-        self.setMinimumSize(900, 700)
+        self.setMinimumSize(600, 400)
+        self.resize(900, 700)
         self.vm_runner = None
         self.config_file = Path("vm_config.json")
 
@@ -265,19 +266,8 @@ class VMManager(QMainWindow):
         self.setCentralWidget(central_widget)
 
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(15)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-
-        # 标题
-        title_label = QLabel("🖥️ Deepin LoongArch VM 管理器")
-        title_label.setStyleSheet("""
-            font-size: 24px;
-            font-weight: bold;
-            color: #1976D2;
-            padding: 10px;
-        """)
-        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        main_layout.addWidget(title_label)
+        main_layout.setSpacing(10)
+        main_layout.setContentsMargins(10, 10, 10, 10)
 
         # 创建标签页
         tabs = QTabWidget()
