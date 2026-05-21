@@ -13,7 +13,46 @@
 
 ## 📋 发布流程
 
-### 第一步：打包生成 EXE
+### 方法一：使用自动发布助手（推荐）⭐
+
+我们提供了两个自动化脚本来简化发布流程：
+
+#### 选项 A：Python 脚本（跨平台）
+
+```bash
+# 运行自动发布助手
+python auto_release.py
+
+# 或者指定版本号
+python auto_release.py v260521-A2
+```
+
+**功能**：
+- ✅ 自动检测最新的 EXE 文件
+- ✅ 自动提取版本号
+- ✅ 创建 Git Tag
+- ✅ 推送到所有远程仓库
+- ✅ 生成 Release 说明模板
+- ✅ 提供各平台发布链接
+
+#### 选项 B：Windows 批处理脚本
+
+```batch
+# 双击运行或在命令行执行
+release_helper.bat
+```
+
+**功能**：
+- ✅ 快速检测和打包
+- ✅ 自动创建和推送 Tag
+- ✅ 生成 Release 说明文件
+- ✅ 显示下一步操作指引
+
+---
+
+### 方法二：手动发布
+
+#### 第一步：打包生成 EXE
 
 ```bash
 # 运行打包脚本
@@ -24,7 +63,7 @@ python build_exe.py
 - `QML_260521_A2.exe` - 带版本号的主文件
 - `Deepin_VM_Manager.exe` - 无版本号文件
 
-### 第二步：创建 Git Tag
+#### 第二步：创建 Git Tag
 
 ```bash
 # 根据 EXE 版本号创建 tag
@@ -36,7 +75,7 @@ git push gitee v260521-A2
 git push gitcode v260521-A2
 ```
 
-### 第三步：在平台上创建 Release
+#### 第三步：在平台上创建 Release
 
 #### GitHub 发布步骤
 
@@ -74,7 +113,7 @@ git push gitcode v260521-A2
 
 ## 📝 Release 描述模板
 
-```markdown
+```
 ## 🎉 QML_260521_A2 发布
 
 **构建时间**: 2026-05-21 14:25  
