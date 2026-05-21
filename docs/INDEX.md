@@ -69,6 +69,20 @@
 
 ---
 
+### 📓 [RELEASE_GUIDE.md](RELEASE_GUIDE.md) - 发布指南 ⭐新增
+**适合人群**: 需要发布 EXE 到 Git 平台的用户  
+**内容概要**:
+- Releases 发布流程详解
+- GitHub/Gitee/GitCode 发布步骤
+- Release 描述模板
+- 自动化方案（GitHub Actions）
+- 版本管理策略
+- 常见问题解答
+
+👉 **准备发布 EXE 时必读**
+
+---
+
 ## 🎯 快速导航
 
 ### 我是新用户，想开始使用
@@ -86,6 +100,7 @@
 
 ### 我要发布新版本
 → 先阅读 [EXE_NAMING_RULES.md](EXE_NAMING_RULES.md) 了解命名规范  
+→ 再查看 [RELEASE_GUIDE.md](RELEASE_GUIDE.md) 学习发布流程  
 → 然后使用打包脚本生成带版本号的 exe
 
 ---
