@@ -1913,15 +1913,16 @@ class VMManager(QMainWindow):
 
         if msg.clickedButton() == save_btn:
             self.save_test_snapshot_from_temp(temp_disk)
+            # 异步操作，线程完成后会调用 cleanup_test_temp
         elif msg.clickedButton() == discard_btn:
             self.discard_test_temp(temp_disk)
+            self.cleanup_test_temp()
         else:
             self.keep_test_changes(temp_disk)
-
-        self.cleanup_test_temp()
+            # 异步操作，线程完成后会调用 cleanup_test_temp
 
     def save_test_snapshot_from_temp(self, temp_disk):
-        """将临时磁盘保存为快照"""
+        """将临时磁盘保存为快照（带进度条）"""
         snapshot_dir = self.config.get('snapshot_dir', '.\\disk\\snapshot')
 
         # 确保目录存在
@@ -1940,21 +1941,67 @@ class VMManager(QMainWindow):
 
         if ok and name:
             snapshot_path = os.path.join(snapshot_dir, f"{name}.qcow2")
+            self._save_snapshot_with_progress(temp_disk, snapshot_path, name)
 
-            # 转换临时磁盘为独立快照（合并 backing file）
-            self.log_text.append(f"正在保存快照: {snapshot_path}...")
-            result = self.run_qemu_img([
-                "convert", "-O", "qcow2", "-c",
-                temp_disk, snapshot_path
-            ])
+    def _save_snapshot_with_progress(self, temp_disk, snapshot_path, name):
+        """带进度条保存快照"""
+        qemu_img = os.path.join(self.config['qemu_dir'], "qemu-img.exe")
+        if not os.path.exists(qemu_img):
+            QMessageBox.critical(self, "错误", f"找不到 qemu-img:\n{qemu_img}")
+            return
 
-            if result and result.returncode == 0:
-                self.log_text.append(f"✅ 测试快照已保存: {snapshot_path}")
+        # 获取源文件大小
+        source_size = os.path.getsize(temp_disk) / (1024 * 1024)
+
+        # 创建进度对话框
+        progress_dialog = QProgressDialog(
+            f"正在保存快照...\n\n源文件大小: {source_size:.2f} MB\n目标: {os.path.basename(snapshot_path)}",
+            "取消",
+            0, 100, self
+        )
+        progress_dialog.setWindowTitle("保存快照中")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+
+        # 创建备份线程（复用 BackupThread）
+        self.backup_thread = BackupThread(qemu_img, temp_disk, snapshot_path, "full")
+
+        # 连接信号
+        def on_progress(msg):
+            if "%" in msg:
+                try:
+                    percent_str = msg.split("%")[0].strip()
+                    percent = int(float(percent_str))
+                    progress_dialog.setValue(percent)
+                    progress_dialog.setLabelText(
+                        f"正在保存快照... {percent}%\n\n"
+                        f"源文件大小: {source_size:.2f} MB\n"
+                        f"目标: {os.path.basename(snapshot_path)}"
+                    )
+                except:
+                    progress_dialog.setLabelText(f"正在保存快照...\n\n{msg}")
+            else:
+                progress_dialog.setLabelText(f"正在保存快照...\n\n{msg}")
+
+        def on_finished(success, msg):
+            progress_dialog.close()
+            if success:
+                self.log_text.append(f"测试快照已保存: {snapshot_path}")
                 QMessageBox.information(self, "成功", f"快照 '{name}' 保存成功！")
             else:
-                error = result.stderr if result else "未知错误"
-                self.log_text.append(f"❌ 保存快照失败: {error}")
-                QMessageBox.critical(self, "错误", f"保存失败:\n{error}")
+                self.log_text.append(f"保存快照失败: {msg}")
+                QMessageBox.critical(self, "错误", f"保存失败:\n{msg}")
+            # 清理临时变量
+            self.cleanup_test_temp()
+
+        self.backup_thread.progress_signal.connect(on_progress)
+        self.backup_thread.finished_signal.connect(on_finished)
+
+        # 启动线程
+        self.backup_thread.start()
 
     def discard_test_temp(self, temp_disk):
         """放弃临时磁盘"""
@@ -1965,7 +2012,7 @@ class VMManager(QMainWindow):
             self.log_text.append(f"⚠️ 删除临时磁盘失败: {str(e)}")
 
     def keep_test_changes(self, temp_disk):
-        """将临时磁盘更改合并回原磁盘"""
+        """将临时磁盘更改合并回原磁盘（带进度条）"""
         original_disk = getattr(self, 'test_original_disk', None)
         if not original_disk:
             QMessageBox.critical(self, "错误", "找不到原磁盘路径！")
@@ -1980,25 +2027,89 @@ class VMManager(QMainWindow):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        self.log_text.append("正在合并更改到原磁盘...")
-        result = self.run_qemu_img([
-            "convert", "-O", "qcow2",
-            temp_disk, original_disk
-        ])
+        self._merge_with_progress(temp_disk, original_disk)
 
-        if result and result.returncode == 0:
-            self.log_text.append("✅ 更改已合并到原磁盘")
-            QMessageBox.information(self, "成功", "更改已保留到原磁盘！")
-        else:
-            error = result.stderr if result else "未知错误"
-            self.log_text.append(f"❌ 合并失败: {error}")
-            QMessageBox.critical(self, "错误", f"合并失败:\n{error}")
+    def _merge_with_progress(self, temp_disk, original_disk):
+        """带进度条合并磁盘"""
+        qemu_img = os.path.join(self.config['qemu_dir'], "qemu-img.exe")
+        if not os.path.exists(qemu_img):
+            QMessageBox.critical(self, "错误", f"找不到 qemu-img:\n{qemu_img}")
+            return
 
-        # 删除临时磁盘
-        try:
-            os.remove(temp_disk)
-        except:
-            pass
+        # 获取源文件大小
+        source_size = os.path.getsize(temp_disk) / (1024 * 1024)
+
+        # 创建进度对话框
+        progress_dialog = QProgressDialog(
+            f"正在合并更改到原磁盘...\n\n源文件大小: {source_size:.2f} MB\n目标: {os.path.basename(original_disk)}",
+            "取消",
+            0, 100, self
+        )
+        progress_dialog.setWindowTitle("合并中")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        progress_dialog.setAutoClose(False)
+        progress_dialog.setAutoReset(False)
+
+        # 创建临时目标文件
+        temp_target = original_disk + ".merging"
+
+        # 创建备份线程
+        self.backup_thread = BackupThread(qemu_img, temp_disk, temp_target, "full")
+
+        # 连接信号
+        def on_progress(msg):
+            if "%" in msg:
+                try:
+                    percent_str = msg.split("%")[0].strip()
+                    percent = int(float(percent_str))
+                    progress_dialog.setValue(percent)
+                    progress_dialog.setLabelText(
+                        f"正在合并更改... {percent}%\n\n"
+                        f"源文件大小: {source_size:.2f} MB\n"
+                        f"目标: {os.path.basename(original_disk)}"
+                    )
+                except:
+                    progress_dialog.setLabelText(f"正在合并更改...\n\n{msg}")
+            else:
+                progress_dialog.setLabelText(f"正在合并更改...\n\n{msg}")
+
+        def on_finished(success, msg):
+            progress_dialog.close()
+            if success:
+                # 替换原磁盘
+                try:
+                    if os.path.exists(original_disk):
+                        os.remove(original_disk)
+                    os.rename(temp_target, original_disk)
+                    self.log_text.append("更改已合并到原磁盘")
+                    QMessageBox.information(self, "成功", "更改已保留到原磁盘！")
+                except Exception as e:
+                    self.log_text.append(f"替换原磁盘失败: {str(e)}")
+                    QMessageBox.critical(self, "错误", f"替换失败:\n{str(e)}")
+            else:
+                self.log_text.append(f"合并失败: {msg}")
+                QMessageBox.critical(self, "错误", f"合并失败:\n{msg}")
+                # 清理临时文件
+                try:
+                    if os.path.exists(temp_target):
+                        os.remove(temp_target)
+                except:
+                    pass
+            # 删除临时磁盘
+            try:
+                os.remove(temp_disk)
+            except:
+                pass
+            # 清理临时变量
+            self.cleanup_test_temp()
+
+        self.backup_thread.progress_signal.connect(on_progress)
+        self.backup_thread.finished_signal.connect(on_finished)
+
+        # 启动线程
+        self.backup_thread.start()
 
     def cleanup_test_temp(self):
         """清理测试临时变量"""
